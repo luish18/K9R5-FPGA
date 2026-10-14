@@ -1,0 +1,9 @@
+[submodule "cva6"]
+	path = cva6
+	url = https://github.com/openhwfoundation/cva6.git
+[submodule "ara"]
+	path = ara
+	url = https://github.com/pulp-platform/ara.git
+[submodule "spatz"]
+	path = spatz
+	url = https://github.com/pulp-platform/spatz.git
