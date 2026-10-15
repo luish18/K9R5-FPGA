@@ -66,6 +66,11 @@ RUN mkdir -p /tmp/bender && cd /tmp/bender \
          || mv ./bender /usr/local/bin/; } \
     && rm -rf /tmp/bender && bender --version
 
+# Some pinned submodules use SSH URLs (e.g. pulp-platform/llvm-project's
+# riscv-opcodes); fetch them anonymously over HTTPS instead.
+RUN git config --system url."https://github.com/".insteadOf "git@github.com:" \
+    && git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+
 ########################################
 #  Ara toolchains (RV64 GCC + LLVM)    #
 ########################################
