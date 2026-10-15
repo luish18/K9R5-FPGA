@@ -1,0 +1,124 @@
+# K9R5-FPGA build environment: CVA6 + Ara (Cheshire) + Spatz cluster.
+#
+# Provides Bender, Verilator, Spike, the RV64 GCC/LLVM toolchains used by Ara
+# and Cheshire, and the RV32 GCC/LLVM toolchains used by the Spatz cluster.
+# Every toolchain is built from the revision pinned by the ara/ and spatz/
+# submodules, so bump ARA_COMMIT / SPATZ_COMMIT / CHESHIRE_COMMIT together with the submodules.
+#
+# Vivado is NOT included (license + size). Mount a host install instead:
+#
+#   docker build -t k9r5-fpga .
+#   docker run -it --rm -v "$PWD":/work -v /tools/Xilinx:/tools/Xilinx k9r5-fpga
+#
+# A full build compiles two LLVMs and two GCCs: expect several hours and
+# ~40 GB of disk for the build cache.
+
+ARG UBUNTU_VERSION=24.04
+ARG ARA_COMMIT=34bd3bc152421b4601a7bf3d6e8e91ffb545c99e
+ARG SPATZ_COMMIT=d26ee74a9d29bb0df4117f9f3071698f5c65f7c0
+ARG CHESHIRE_COMMIT=e040b7bbc7851a37faff3c4657ff8d656cc6e20a
+ARG BENDER_VERSION=0.32.1
+
+########################################
+#  Base: OS packages, Python, Bender   #
+########################################
+FROM ubuntu:${UBUNTU_VERSION} AS base
+
+ARG ARA_COMMIT
+ARG SPATZ_COMMIT
+ARG CHESHIRE_COMMIT
+ARG BENDER_VERSION
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The libx*/libtinfo6/locales packages are runtime deps of a mounted Vivado.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf automake autotools-dev bc bison build-essential ca-certificates \
+        ccache cmake curl device-tree-compiler flex g++ gawk gcc git gperf \
+        help2man libelf-dev libexpat1-dev libfl-dev libfl2 libglib2.0-dev \
+        libgmp-dev libmpc-dev libmpfr-dev libncurses-dev libslirp-dev libtool \
+        ninja-build openocd patch patchutils perl pkg-config python3 \
+        python3-dev python3-pip python3-venv rsync texinfo unzip wget xz-utils \
+        zlib1g zlib1g-dev \
+        libtinfo6 libx11-6 libxext6 libxrender1 libxtst6 locales \
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8
+
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+# Python deps of Ara, Spatz and Cheshire, in one venv on PATH
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv ${VIRTUAL_ENV}
+ENV PATH=${VIRTUAL_ENV}/bin:${PATH}
+RUN curl -fsSL -o /tmp/ara-req.txt \
+        https://raw.githubusercontent.com/pulp-platform/ara/${ARA_COMMIT}/python-requirements.txt \
+    && curl -fsSL -o /tmp/spatz-req.txt \
+        https://raw.githubusercontent.com/pulp-platform/spatz/${SPATZ_COMMIT}/requirements.txt \
+    && curl -fsSL -o /tmp/chs-req.txt \
+        https://raw.githubusercontent.com/pulp-platform/cheshire/${CHESHIRE_COMMIT}/requirements.txt \
+    && pip install --no-cache-dir -r /tmp/ara-req.txt -r /tmp/spatz-req.txt -r /tmp/chs-req.txt \
+    && rm /tmp/*-req.txt
+
+# Newer installers put the binary in ~/.cargo/bin, older ones in the cwd
+RUN mkdir -p /tmp/bender && cd /tmp/bender \
+    && curl --proto '=https' --tlsv1.2 -sSf https://pulp-platform.github.io/bender/init \
+        | sh -s -- ${BENDER_VERSION} \
+    && { [ -x /root/.cargo/bin/bender ] && mv /root/.cargo/bin/bender /usr/local/bin/ \
+         || mv ./bender /usr/local/bin/; } \
+    && rm -rf /tmp/bender && bender --version
+
+########################################
+#  Ara toolchains (RV64 GCC + LLVM)    #
+########################################
+FROM base AS ara-toolchain
+
+ARG ARA_COMMIT
+RUN git clone https://github.com/pulp-platform/ara.git /src/ara \
+    && cd /src/ara && git checkout ${ARA_COMMIT} \
+    && git submodule update --init --recursive --checkout \
+        toolchain/riscv-gnu-toolchain toolchain/newlib toolchain/riscv-llvm
+
+# `-o git-submodules` skips Ara's catch-all submodule update (which would
+# also pull cva6-sdk/buildroot); only the toolchain submodules are needed here.
+RUN cd /src/ara && make -o git-submodules toolchain-gcc INSTALL_DIR=/opt/ara/install
+RUN cd /src/ara && make -o git-submodules toolchain-llvm INSTALL_DIR=/opt/ara/install
+
+########################################
+#  Spatz toolchains (RV32 GCC + LLVM)  #
+########################################
+FROM base AS spatz-toolchain
+
+ARG SPATZ_COMMIT
+RUN git clone https://github.com/pulp-platform/spatz.git /src/spatz \
+    && cd /src/spatz && git checkout ${SPATZ_COMMIT} \
+    && make download
+
+RUN cd /src/spatz && make tc-llvm INSTALL_DIR=/opt/spatz/install
+RUN cd /src/spatz && make tc-riscv-gcc INSTALL_DIR=/opt/spatz/install
+RUN cd /src/spatz && make tc-riscv-isa-sim INSTALL_DIR=/opt/spatz/install
+RUN cd /src/spatz && make verilator INSTALL_DIR=/opt/spatz/install
+
+########################################
+#  Final image                         #
+########################################
+FROM base
+
+COPY --from=ara-toolchain   /opt/ara/install   /opt/ara/install
+COPY --from=spatz-toolchain /opt/spatz/install /opt/spatz/install
+
+# OpenTitan's regtool (used by Cheshire's register generation) still imports
+# pkg_resources, which setuptools dropped in v81
+RUN pip install --no-cache-dir 'setuptools<81'
+
+# Only the RV64 GCC (Cheshire/CVA6 software), Spike and Verilator go on PATH.
+# The two clang installs collide by name, so Ara and Spatz each find their
+# own through <repo>/install, which the entrypoint links to /opt/*/install.
+ENV PATH=/opt/ara/install/riscv-gcc/bin:/opt/spatz/install/verilator/bin:/opt/spatz/install/riscv-isa-sim/bin:${PATH} \
+    ARA_INSTALL_DIR=/opt/ara/install \
+    SPATZ_INSTALL_DIR=/opt/spatz/install
+
+COPY docker/k9r5-entrypoint.sh /usr/local/bin/k9r5-entrypoint
+RUN chmod +x /usr/local/bin/k9r5-entrypoint
+
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/k9r5-entrypoint"]
+CMD ["bash"]

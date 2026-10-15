@@ -1,0 +1,14 @@
+# K9R5: Cheshire SoC (CVA6 + Ara) on FPGA.
+#
+# Cheshire (branch mp/ara-pulp-v2) is the base SoC. Bender.local overrides
+# Cheshire's pins so this repo's ara/ and cva6/ submodules are used instead.
+#
+# Spatz is not listed yet: its dependency pins (axi =0.39.1-beta,
+# register_interface 0.3, riscv-dbg 0.7, axi_riscv_atomics 0.7) conflict with
+# Cheshire's and must be resolved when the cluster is integrated.
+
+package:
+  name: k9r5
+
+dependencies:
+  cheshire: { path: cheshire }

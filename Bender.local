@@ -1,0 +1,5 @@
+# Committed on purpose: these overrides define the K9R5 configuration.
+# Use this repo's submodules instead of the revisions Cheshire pins.
+overrides:
+  ara:  { path: ara }
+  cva6: { path: cva6 }

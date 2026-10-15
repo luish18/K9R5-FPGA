@@ -1,9 +1,13 @@
 [submodule "cva6"]
 	path = cva6
-	url = https://github.com/openhwfoundation/cva6.git
+	url = https://github.com/pulp-platform/cva6.git
 [submodule "ara"]
 	path = ara
 	url = https://github.com/pulp-platform/ara.git
 [submodule "spatz"]
 	path = spatz
 	url = https://github.com/pulp-platform/spatz.git
+[submodule "cheshire"]
+	path = cheshire
+	url = https://github.com/pulp-platform/cheshire.git
+	branch = mp/ara-pulp-v2

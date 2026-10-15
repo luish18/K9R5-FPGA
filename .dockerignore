@@ -1,0 +1,3 @@
+# The image clones its own sources at pinned commits; only send the docker/ helpers.
+*
+!docker/
