@@ -99,7 +99,10 @@ RUN git clone https://github.com/pulp-platform/spatz.git /src/spatz \
 
 RUN cd /src/spatz && make tc-llvm INSTALL_DIR=/opt/spatz/install
 RUN cd /src/spatz && make tc-riscv-gcc INSTALL_DIR=/opt/spatz/install
-RUN cd /src/spatz && make tc-riscv-isa-sim INSTALL_DIR=/opt/spatz/install
+# The pinned Spike uses uint64_t in fesvr/device.h without <cstdint>, which
+# GCC 13 no longer pulls in transitively
+RUN cd /src/spatz && CXXFLAGS="-g -O2 -include cstdint" \
+        make tc-riscv-isa-sim INSTALL_DIR=/opt/spatz/install
 RUN cd /src/spatz && make verilator INSTALL_DIR=/opt/spatz/install
 
 ########################################
