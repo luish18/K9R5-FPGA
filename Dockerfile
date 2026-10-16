@@ -85,7 +85,18 @@ RUN git clone https://github.com/pulp-platform/ara.git /src/ara \
 # `-o git-submodules` skips Ara's catch-all submodule update (which would
 # also pull cva6-sdk/buildroot); only the toolchain submodules are needed here.
 RUN cd /src/ara && make -o git-submodules toolchain-gcc INSTALL_DIR=/opt/ara/install
-RUN cd /src/ara && make -o git-submodules toolchain-llvm INSTALL_DIR=/opt/ara/install
+# LLVM is built in its three parts so a late failure keeps the compiler cached;
+# `-o` skips the parts a target would otherwise rebuild as prerequisites.
+RUN cd /src/ara && make -o git-submodules toolchain-llvm-main INSTALL_DIR=/opt/ara/install
+RUN cd /src/ara && make -o git-submodules -o toolchain-llvm-main \
+        toolchain-llvm-newlib INSTALL_DIR=/opt/ara/install
+# LLVM 20's compiler-rt adds runtimes Ara's Makefile does not disable; the ctx
+# profile runtime pulls in sanitizer_common, which rejects bare-metal targets.
+RUN cd /src/ara \
+    && sed -i 's/-DCOMPILER_RT_BUILD_XRAY=OFF/& -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF -DCOMPILER_RT_BUILD_ORC=OFF -DCOMPILER_RT_BUILD_GWP_ASAN=OFF/' Makefile \
+    && grep -q CTX_PROFILE=OFF Makefile \
+    && make -o git-submodules -o toolchain-llvm-main -o toolchain-llvm-newlib \
+        toolchain-llvm-rt INSTALL_DIR=/opt/ara/install
 
 ########################################
 #  Spatz toolchains (RV32 GCC + LLVM)  #
