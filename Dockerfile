@@ -103,7 +103,12 @@ RUN cd /src/spatz && make tc-riscv-gcc INSTALL_DIR=/opt/spatz/install
 # GCC 13 no longer pulls in transitively
 RUN cd /src/spatz && CXXFLAGS="-g -O2 -include cstdint" \
         make tc-riscv-isa-sim INSTALL_DIR=/opt/spatz/install
-RUN cd /src/spatz && make verilator INSTALL_DIR=/opt/spatz/install
+# Build Verilator from the source `make download` already fetched at Spatz's
+# pinned version. Spatz's own `verilator` target also downloads and builds
+# help2man from ftp.gnu.org, which is flaky; the base image has it from apt.
+RUN cd /src/spatz/sw/toolchain/verilator && unset VERILATOR_ROOT \
+    && autoconf && ./configure --prefix=/opt/spatz/install/verilator \
+    && make -j$(nproc) && make install
 
 ########################################
 #  Final image                         #
