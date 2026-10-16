@@ -11,7 +11,7 @@
 #   docker run -it --rm -v "$PWD":/work -v /tools/Xilinx:/tools/Xilinx k9r5-fpga
 #
 # A full build compiles two LLVMs and two GCCs: expect several hours and
-# ~40 GB of disk for the build cache.
+# ~40 GB of free disk (build cache plus temporary build trees).
 
 ARG UBUNTU_VERSION=24.04
 ARG ARA_COMMIT=34bd3bc152421b4601a7bf3d6e8e91ffb545c99e
@@ -77,26 +77,39 @@ RUN git config --system url."https://github.com/".insteadOf "git@github.com:" \
 FROM base AS ara-toolchain
 
 ARG ARA_COMMIT
-RUN git clone https://github.com/pulp-platform/ara.git /src/ara \
-    && cd /src/ara && git checkout ${ARA_COMMIT} \
-    && git submodule update --init --recursive --checkout \
-        toolchain/riscv-gnu-toolchain toolchain/newlib toolchain/riscv-llvm
+# Fetch only the pinned commits (no history) and only the GCC submodules the
+# newlib toolchain needs (not qemu/glibc/dejagnu): ~4 GB instead of ~26 GB.
+# Ara marks these submodules `update = none`, hence --checkout.
+RUN git init -q /src/ara && cd /src/ara \
+    && git remote add origin https://github.com/pulp-platform/ara.git \
+    && git fetch -q --depth 1 origin ${ARA_COMMIT} && git checkout -q FETCH_HEAD \
+    && git submodule update --init --checkout --depth 1 \
+        toolchain/riscv-gnu-toolchain toolchain/newlib toolchain/riscv-llvm \
+    && git -C toolchain/riscv-gnu-toolchain submodule update --init --depth 1 \
+        riscv-binutils riscv-gcc riscv-newlib riscv-gdb
 
+# Each step deletes its build tree (and sources no later step needs) in the
+# same RUN, so the build cache does not keep tens of GB of objects.
 # `-o git-submodules` skips Ara's catch-all submodule update (which would
 # also pull cva6-sdk/buildroot); only the toolchain submodules are needed here.
-RUN cd /src/ara && make -o git-submodules toolchain-gcc INSTALL_DIR=/opt/ara/install
+RUN cd /src/ara && make -o git-submodules toolchain-gcc INSTALL_DIR=/opt/ara/install \
+    && rm -rf toolchain/riscv-gnu-toolchain
 # LLVM is built in its three parts so a late failure keeps the compiler cached;
 # `-o` skips the parts a target would otherwise rebuild as prerequisites.
-RUN cd /src/ara && make -o git-submodules toolchain-llvm-main INSTALL_DIR=/opt/ara/install
+# compiler-rt (last step) builds from riscv-llvm's sources, so only build/ goes.
+RUN cd /src/ara && make -o git-submodules toolchain-llvm-main INSTALL_DIR=/opt/ara/install \
+    && rm -rf toolchain/riscv-llvm/build
 RUN cd /src/ara && make -o git-submodules -o toolchain-llvm-main \
-        toolchain-llvm-newlib INSTALL_DIR=/opt/ara/install
+        toolchain-llvm-newlib INSTALL_DIR=/opt/ara/install \
+    && rm -rf toolchain/newlib
 # LLVM 20's compiler-rt adds runtimes Ara's Makefile does not disable; the ctx
 # profile runtime pulls in sanitizer_common, which rejects bare-metal targets.
 RUN cd /src/ara \
     && sed -i 's/-DCOMPILER_RT_BUILD_XRAY=OFF/& -DCOMPILER_RT_BUILD_CTX_PROFILE=OFF -DCOMPILER_RT_BUILD_ORC=OFF -DCOMPILER_RT_BUILD_GWP_ASAN=OFF/' Makefile \
     && grep -q CTX_PROFILE=OFF Makefile \
     && make -o git-submodules -o toolchain-llvm-main -o toolchain-llvm-newlib \
-        toolchain-llvm-rt INSTALL_DIR=/opt/ara/install
+        toolchain-llvm-rt INSTALL_DIR=/opt/ara/install \
+    && rm -rf toolchain/riscv-llvm
 
 ########################################
 #  Spatz toolchains (RV32 GCC + LLVM)  #
