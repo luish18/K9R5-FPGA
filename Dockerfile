@@ -1,16 +1,17 @@
 # K9R5-FPGA build environment: CVA6 + Ara (Cheshire) + Spatz cluster.
 #
-# Provides Bender, Verilator, Spike, the RV64 GCC/LLVM toolchains used by Ara
-# and Cheshire, and the RV32 GCC/LLVM toolchains used by the Spatz cluster.
-# Every toolchain is built from the revision pinned by the ara/ and spatz/
-# submodules, so bump ARA_COMMIT / SPATZ_COMMIT / CHESHIRE_COMMIT together with the submodules.
+# Provides Bender, Verilator, Spike, a modern RV64 GCC for Cheshire/CVA6
+# software, Ara's RV64 LLVM, and the RV32 GCC/LLVM toolchains used by the Spatz
+# cluster. Ara's and Spatz's toolchains are built from the revisions pinned by
+# the ara/ and spatz/ submodules, so bump ARA_COMMIT / SPATZ_COMMIT /
+# CHESHIRE_COMMIT together with the submodules.
 #
 # Vivado is NOT included (license + size). Mount a host install instead:
 #
 #   docker build -t k9r5-fpga .
 #   docker run -it --rm -v "$PWD":/work -v /tools/Xilinx:/tools/Xilinx k9r5-fpga
 #
-# A full build compiles two LLVMs and two GCCs: expect several hours and
+# A full build compiles two LLVMs and three GCCs: expect several hours and
 # ~40 GB of free disk (build cache plus temporary build trees).
 
 ARG UBUNTU_VERSION=24.04
@@ -18,6 +19,7 @@ ARG ARA_COMMIT=34bd3bc152421b4601a7bf3d6e8e91ffb545c99e
 ARG SPATZ_COMMIT=d26ee74a9d29bb0df4117f9f3071698f5c65f7c0
 ARG CHESHIRE_COMMIT=e040b7bbc7851a37faff3c4657ff8d656cc6e20a
 ARG BENDER_VERSION=0.32.1
+ARG RISCV_GNU_TOOLCHAIN_TAG=2026.08.27
 
 ########################################
 #  Base: OS packages, Python, Bender   #
@@ -135,12 +137,50 @@ RUN cd /src/spatz/sw/toolchain/verilator && unset VERILATOR_ROOT \
     && make -j$(nproc) && make install
 
 ########################################
+#  RV64 GCC for Cheshire/CVA6 software #
+########################################
+# Cheshire needs GCC >= 11.2 (and its standard libexec layout for the LTO
+# plugin); Ara's pinned GCC is 9.2 with draft RVV 0.9 encodings. Build upstream
+# riscv-gnu-toolchain with newlib; medany because DRAM sits at 0x8000_0000.
+# Its Makefile fetches only the submodules a newlib build needs, at depth 1.
+FROM base AS cheshire-gcc
+
+ARG RISCV_GNU_TOOLCHAIN_TAG
+RUN git clone -q --depth 1 -b ${RISCV_GNU_TOOLCHAIN_TAG} \
+        https://github.com/riscv-collab/riscv-gnu-toolchain.git /src/rgt \
+    && cd /src/rgt \
+    && ./configure --prefix=/opt/riscv --with-arch=rv64gc --with-abi=lp64d --with-cmodel=medany \
+    && make -j$(nproc) newlib \
+    && cd / && rm -rf /src/rgt
+
+########################################
 #  Final image                         #
 ########################################
 FROM base
 
-COPY --from=ara-toolchain   /opt/ara/install   /opt/ara/install
-COPY --from=spatz-toolchain /opt/spatz/install /opt/spatz/install
+COPY --from=cheshire-gcc /opt/riscv /opt/riscv
+
+# Ara's and Spatz's Makefiles pass INSTALL_DIR on the command line, which also
+# overrides riscv-gnu-toolchain's own INSTALL_DIR, so their GCCs land in the
+# install root instead of install/riscv-gcc. Copy them to where Ara's apps
+# (GCC_INSTALL_DIR) and Spatz's bootrom/CMake flow look for them.
+COPY --from=ara-toolchain /opt/ara/install/riscv-llvm          /opt/ara/install/riscv-llvm
+COPY --from=ara-toolchain /opt/ara/install/bin                 /opt/ara/install/riscv-gcc/bin
+COPY --from=ara-toolchain /opt/ara/install/include             /opt/ara/install/riscv-gcc/include
+COPY --from=ara-toolchain /opt/ara/install/lib                 /opt/ara/install/riscv-gcc/lib
+COPY --from=ara-toolchain /opt/ara/install/libexec             /opt/ara/install/riscv-gcc/libexec
+COPY --from=ara-toolchain /opt/ara/install/share               /opt/ara/install/riscv-gcc/share
+COPY --from=ara-toolchain /opt/ara/install/riscv64-unknown-elf /opt/ara/install/riscv-gcc/riscv64-unknown-elf
+
+COPY --from=spatz-toolchain /opt/spatz/install/llvm                /opt/spatz/install/llvm
+COPY --from=spatz-toolchain /opt/spatz/install/riscv-isa-sim       /opt/spatz/install/riscv-isa-sim
+COPY --from=spatz-toolchain /opt/spatz/install/verilator           /opt/spatz/install/verilator
+COPY --from=spatz-toolchain /opt/spatz/install/bin                 /opt/spatz/install/riscv-gcc/bin
+COPY --from=spatz-toolchain /opt/spatz/install/include             /opt/spatz/install/riscv-gcc/include
+COPY --from=spatz-toolchain /opt/spatz/install/lib                 /opt/spatz/install/riscv-gcc/lib
+COPY --from=spatz-toolchain /opt/spatz/install/libexec             /opt/spatz/install/riscv-gcc/libexec
+COPY --from=spatz-toolchain /opt/spatz/install/share               /opt/spatz/install/riscv-gcc/share
+COPY --from=spatz-toolchain /opt/spatz/install/riscv32-unknown-elf /opt/spatz/install/riscv-gcc/riscv32-unknown-elf
 
 # OpenTitan's regtool (used by Cheshire's register generation) still imports
 # pkg_resources, which setuptools dropped in v81
@@ -149,7 +189,7 @@ RUN pip install --no-cache-dir 'setuptools<81'
 # Only the RV64 GCC (Cheshire/CVA6 software), Spike and Verilator go on PATH.
 # The two clang installs collide by name, so Ara and Spatz each find their
 # own through <repo>/install, which the entrypoint links to /opt/*/install.
-ENV PATH=/opt/ara/install/riscv-gcc/bin:/opt/spatz/install/verilator/bin:/opt/spatz/install/riscv-isa-sim/bin:${PATH} \
+ENV PATH=/opt/riscv/bin:/opt/spatz/install/verilator/bin:/opt/spatz/install/riscv-isa-sim/bin:${PATH} \
     ARA_INSTALL_DIR=/opt/ara/install \
     SPATZ_INSTALL_DIR=/opt/spatz/install
 
