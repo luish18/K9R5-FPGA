@@ -1,8 +1,9 @@
 #!/bin/sh
-# Point ara/install and spatz/install (both git-ignored) at the prebuilt toolchains.
+# Point ara/install and spatz/install (both git-ignored) at the prebuilt
+# toolchains, in the repo mounted at the working directory.
 for p in ara spatz; do
-    if [ -d "/work/$p" ] && [ ! -e "/work/$p/install" ]; then
-        ln -s "/opt/$p/install" "/work/$p/install"
+    if [ -d "$PWD/$p" ] && [ ! -e "$PWD/$p/install" ]; then
+        ln -s "/opt/$p/install" "$PWD/$p/install"
     fi
 done
 # Source Vivado if a host install is mounted
