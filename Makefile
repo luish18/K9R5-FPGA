@@ -20,7 +20,7 @@ ARA_ROOT    := $(K9R5_ROOT)/ara
 VIVADO      ?= vivado
 
 # Host goals skip the includes below, which need Bender and the container.
-K9R5_HOST_GOALS := k9r5-deps k9r5-sim-compile k9r5-sim
+K9R5_HOST_GOALS := k9r5-deps k9r5-sim-compile k9r5-sim-opt k9r5-sim
 ifneq ($(MAKECMDGOALS),)
 ifeq ($(filter-out $(K9R5_HOST_GOALS),$(MAKECMDGOALS)),)
 K9R5_HOST_ONLY := 1
@@ -61,30 +61,56 @@ K9R5_VSIM_RUN  = LD_PRELOAD=$(shell $(K9R5_VSIM_CXX) -print-file-name=libstdc++.
 # Testbench config 3 is Cheshire with Ara (gen_cheshire_ara_cfg() in
 # tb_cheshire_pkg.sv); the ARA define alone only affects the FPGA top.
 SELCFG   ?= 3
-# Boot mode 0 (idle) preloads BINARY; preload mode 0 = JTAG, 1 = serial link,
-# 2 = UART.
+# Boot mode 0 (idle) preloads BINARY. Preload mode 1 (serial link) is far
+# faster than 0 (JTAG); 2 = UART.
 BOOTMODE ?= 0
-PRELMODE ?= 0
+PRELMODE ?= 1
 BINARY   ?=
+# Simulated-time limit per run ("-all" for none). A program that traps sits in
+# Cheshire's trap handler forever, so without a limit a failing run never ends.
+K9R5_SIM_TIMEOUT ?= 100ms
 K9R5_SIM_LOG = $(K9R5_VSIM_DIR)/k9r5-sim.$(notdir $(BINARY)).log
 
-.PHONY: k9r5-sim-compile k9r5-sim
+# The testbench is optimized once per SELCFG (cached in the work library)
+# instead of on every run; k9r5-sim-compile invalidates the cache.
+K9R5_VOPT_ARGS  ?= -O5 +acc=npr+tb_cheshire_soc. +acc=npr+cheshire_soc. +acc=r+stream_xbar
+K9R5_VSIM_FLAGS := -permissive -suppress 3009 -suppress 8386 -error 7
+K9R5_VOPT_TOP    = tb_k9r5_cfg$(SELCFG)
+K9R5_VOPT_STAMP  = $(K9R5_VSIM_DIR)/work/$(K9R5_VOPT_TOP).k9r5-stamp
+
+# CPU state printed when a run stops, to identify traps (mcause/mepc/mtval)
+K9R5_SIM_REPORT := set C {/tb_cheshire_soc/fix/dut/gen_cva6_cores[0]/i_core_cva6};\
+ set R $$C/csr_regfile_i;\
+ echo "[K9R5] Stopped at [now]: pc=[examine -radix hex $$C/pc_commit]\
+ mcause=[examine -radix hex $$R/mcause_q] mepc=[examine -radix hex $$R/mepc_q]\
+ mtval=[examine -radix hex $$R/mtval_q]"
+
+.PHONY: k9r5-sim-compile k9r5-sim-opt k9r5-sim
 k9r5-sim-compile:
 	@test -f $(K9R5_VSIM_COMPILE) || \
 		{ echo "Run 'make k9r5-sim-scripts' in the container first."; exit 1; }
+	rm -f $(K9R5_VSIM_DIR)/work/*.k9r5-stamp
 	cd $(K9R5_VSIM_DIR) && $(K9R5_VSIM_RUN) -c -do \
 		'set rc [source $(K9R5_VSIM_COMPILE)]; if {$$rc ne "1"} {set rc [catch {vlog $(CHS_ROOT)/target/sim/src/elfloader.cpp -ccflags "-std=c++11" -cpppath $(K9R5_VSIM_CXX)}]}; quit -code [expr {$$rc eq "1"}]' \
 		| tee compile.k9r5.log
 	@! grep -qE '^# \*\* (Error|Fatal)' $(K9R5_VSIM_DIR)/compile.k9r5.log
 
-# Exits non-zero unless the testbench reports [JTAG] SUCCESS.
-k9r5-sim:
-	@test -n "$(BINARY)" || { echo "Usage: make k9r5-sim BINARY=<elf>"; exit 1; }
+k9r5-sim-opt: $(K9R5_VOPT_STAMP)
+$(K9R5_VSIM_DIR)/work/tb_k9r5_cfg%.k9r5-stamp:
 	@test -d $(K9R5_VSIM_DIR)/work || { echo "Run 'make k9r5-sim-compile' first."; exit 1; }
-	cd $(K9R5_VSIM_DIR) && $(K9R5_VSIM_RUN) -c -do \
-		'set CXX_PATH $(K9R5_VSIM_CXX); set SELCFG $(SELCFG); set BOOTMODE $(BOOTMODE); set PRELMODE $(PRELMODE); set BINARY $(abspath $(BINARY)); source start.cheshire_soc.tcl; run -all; quit -f' \
+	cd $(K9R5_VSIM_DIR) && vopt $(K9R5_VSIM_FLAGS) tb_cheshire_soc -GSelectedCfg=$* \
+		$(K9R5_VOPT_ARGS) -o tb_k9r5_cfg$* | tee vopt.k9r5.log
+	@! grep -qE '^\*\* (Error|Fatal)' $(K9R5_VSIM_DIR)/vopt.k9r5.log
+	touch $@
+
+# Exits non-zero unless the testbench reports SUCCESS (over JTAG or serial link).
+k9r5-sim: $(K9R5_VOPT_STAMP)
+	@test -n "$(BINARY)" || { echo "Usage: make k9r5-sim BINARY=<elf>"; exit 1; }
+	cd $(K9R5_VSIM_DIR) && $(K9R5_VSIM_RUN) -c $(K9R5_VOPT_TOP) -t 1ps $(K9R5_VSIM_FLAGS) \
+		-cpppath $(K9R5_VSIM_CXX) +BOOTMODE=$(BOOTMODE) +PRELMODE=$(PRELMODE) +BINARY=$(abspath $(BINARY)) \
+		-do 'set StdArithNoWarnings 1; set NumericStdNoWarnings 1; run $(K9R5_SIM_TIMEOUT); $(K9R5_SIM_REPORT); quit -f' \
 		| tee $(K9R5_SIM_LOG)
-	@grep -q '\[JTAG\] SUCCESS' $(K9R5_SIM_LOG)
+	@grep -qE '\[(JTAG|SLINK)\] SUCCESS' $(K9R5_SIM_LOG)
 
 ifndef K9R5_HOST_ONLY
 
@@ -174,14 +200,22 @@ $(K9R5_SW_ARA_ALL) $(K9R5_SW_ARA_C:.c=.o): private CHS_SW_FLAGS := $(K9R5_SW_ARA
 $(K9R5_SW_ARA_C:.c=.o): $(K9R5_SW_ARA_DEPS)
 .SECONDARY: $(K9R5_SW_ARA_C)
 
-$(K9R5_SW_ARA_DIR)/%.c: $(ARA_CHS_SW)/src/%.c | $(K9R5_SW_ARA_DIR)
-	cp $< $@
-$(K9R5_SW_ARA_DIR)/%.c: $(ARA_CHS_SW)/src/tests/%.c | $(K9R5_SW_ARA_DIR)
-	cp $< $@
-$(K9R5_SW_ARA_DIR)/%.h: $(ARA_CHS_SW)/include/%.h | $(K9R5_SW_ARA_DIR)
-	cp $< $@
-$(K9R5_SW_ARA_DIR)/%.body: $(ARA_CHS_SW)/src/tests/body/%.body | $(K9R5_SW_ARA_DIR)
-	cp $< $@
+# Copies get sw/patches/ara/<file>.patch applied when one exists (K9R5 fixes
+# to Ara's sources, which stay untouched). Secondary expansion is enabled by
+# Cheshire's xilinx.mk.
+K9R5_SW_ARA_PATCHES := $(K9R5_ROOT)/sw/patches/ara
+k9r5_sw_ara_copy = cp $< $@ && if [ -f $(K9R5_SW_ARA_PATCHES)/$(notdir $@).patch ]; then \
+                   patch -s $@ < $(K9R5_SW_ARA_PATCHES)/$(notdir $@).patch; fi
+k9r5_sw_ara_patch = $$(wildcard $(K9R5_SW_ARA_PATCHES)/$$(notdir $$@).patch)
+
+$(K9R5_SW_ARA_DIR)/%.c: $(ARA_CHS_SW)/src/%.c $(k9r5_sw_ara_patch) | $(K9R5_SW_ARA_DIR)
+	$(k9r5_sw_ara_copy)
+$(K9R5_SW_ARA_DIR)/%.c: $(ARA_CHS_SW)/src/tests/%.c $(k9r5_sw_ara_patch) | $(K9R5_SW_ARA_DIR)
+	$(k9r5_sw_ara_copy)
+$(K9R5_SW_ARA_DIR)/%.h: $(ARA_CHS_SW)/include/%.h $(k9r5_sw_ara_patch) | $(K9R5_SW_ARA_DIR)
+	$(k9r5_sw_ara_copy)
+$(K9R5_SW_ARA_DIR)/%.body: $(ARA_CHS_SW)/src/tests/body/%.body $(k9r5_sw_ara_patch) | $(K9R5_SW_ARA_DIR)
+	$(k9r5_sw_ara_copy)
 $(K9R5_SW_ARA_DIR):
 	mkdir -p $@
 

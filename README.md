@@ -58,9 +58,13 @@ make k9r5-sim-compile                                        # compile the SoC (
 make k9r5-sim BINARY=sw/build/ara/vector_helloworld.spm.elf  # run one program
 ```
 
-`k9r5-sim` uses testbench config 3 (Cheshire with Ara), preloads `BINARY` over JTAG
-(`PRELMODE=0`; `1` = serial link, `2` = UART) and fails unless the testbench reports
-`[JTAG] SUCCESS`. The log is `cheshire/target/sim/vsim/k9r5-sim.<binary>.log`.
+`k9r5-sim` uses testbench config 3 (Cheshire with Ara), preloads `BINARY` over the serial link
+(`PRELMODE=1`, much faster than JTAG for large binaries; `0` = JTAG, `2` = UART) and fails unless
+the testbench reports `SUCCESS`. Each run stops after `K9R5_SIM_TIMEOUT` of simulated time
+(default `100ms`, `-all` for no limit) and prints the CPU's `pc`/`mcause`/`mepc`/`mtval`, so a
+program that traps fails instead of hanging. The optimized testbench is cached per `SELCFG`
+(`make k9r5-sim-opt`, rerun automatically after `k9r5-sim-compile`). The log is
+`cheshire/target/sim/vsim/k9r5-sim.<binary>.log`.
 
 Notes for Questa Starter Edition (and other hosts):
 
@@ -70,4 +74,5 @@ Notes for Questa Starter Edition (and other hosts):
 - The DPI ELF loader is built with the system `g++`, and `vsim` runs with that compiler's
   `libstdc++` preloaded, because Questa's bundled `libstdc++` is older. Override the compiler
   with `K9R5_VSIM_CXX`.
-- Starter Edition is slow: Cheshire's `helloworld` takes about 10 minutes.
+- Starter Edition is slow: about 4 minutes per simulated millisecond. UART output at 115200 baud
+  costs ~87 µs of simulated time per character, so `helloworld` takes about 9 minutes.
