@@ -68,3 +68,6 @@ Testing/
 
 # Bender checkouts
 .bender/
+
+# Questa working directory (see K9R5_VSIM_DIR in the Makefile)
+target/sim/vsim/
