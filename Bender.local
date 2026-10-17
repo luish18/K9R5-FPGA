@@ -1,5 +1,17 @@
 # Committed on purpose: these overrides define the K9R5 configuration.
-# Use this repo's submodules instead of the revisions Cheshire pins.
 overrides:
+  # Use this repo's submodules instead of the revisions Cheshire pins
   ara:  { path: ara }
   cva6: { path: cva6 }
+  # Spatz's internal IPs, also declared as path dependencies by spatz_vpu
+  snitch:           { path: spatz/hw/ip/snitch }
+  reqrsp_interface: { path: spatz/hw/ip/reqrsp_interface }
+  # Shared with Spatz, which pins older versions: use the newer of Cheshire's
+  # and Spatz's (as Carfield does). Keep in sync with util/gen-bender-lock.py.
+  axi:                { git: "https://github.com/pulp-platform/axi.git",                version: 0.39.6 }
+  axi_riscv_atomics:  { git: "https://github.com/pulp-platform/axi_riscv_atomics.git",  version: 0.8.2  }
+  register_interface: { git: "https://github.com/pulp-platform/register_interface.git", version: 0.4.4  }
+  riscv-dbg:          { git: "https://github.com/pulp-platform/riscv-dbg.git",          version: 0.8.1  }
+  common_cells:       { git: "https://github.com/pulp-platform/common_cells.git",       version: 1.38.0 }
+  idma:               { git: "https://github.com/pulp-platform/iDMA.git",               version: 0.6.5  }
+  obi:                { git: "https://github.com/pulp-platform/obi.git",                version: 0.1.7  }
