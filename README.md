@@ -10,7 +10,7 @@ AXI accelerator.
 | Path | What | Pinned at |
 |---|---|---|
 | `cheshire/` | Base SoC | `mp/ara-pulp-v2` branch (the Cheshire + Ara integration) |
-| `cva6/` | `pulp-platform/cva6` fork | `pulp-v2.0.0-alpha.1`, the revision Ara and Cheshire require |
+| `cva6/` | `pulp-platform/cva6` fork | `pulp-v2.0.0` (Ara and Cheshire's Ara branch pin `alpha.1`, whose `mstatus.FS` never turns Dirty on scalar FP writes; fixed in upstream commit `ecb138010`) |
 | `ara/` | Ara vector unit | Ara `main` (bug fixes ahead of Cheshire's pin) |
 | `spatz/` | Spatz cluster | not yet wired into the SoC |
 
