@@ -222,4 +222,66 @@ $(K9R5_SW_ARA_DIR):
 .PHONY: k9r5-sw-ara
 k9r5-sw-ara: $(K9R5_SW_ARA_ALL)
 
+##################################
+# Ara standalone testbench (Verilator)
+##################################
+
+# Ara's own testbench: CVA6 + Ara with an ideal memory, verilated. It uses
+# Ara's pinned dependencies (CVA6 alpha.1; Ara's crt0 enables the FPU itself,
+# so the mstatus.FS bug does not affect it) and Ara's pinned Verilator, which
+# the image installs in ara/install/verilator: with Verilator 5.050 about 30 of
+# Ara's riscv-tests hang. Orders of magnitude faster than the SoC in Questa.
+K9R5_ARA_HW         := $(ARA_ROOT)/hardware
+K9R5_ARA_APPS       := $(ARA_ROOT)/apps
+K9R5_ARA_VERIL_PATH ?= $(ARA_ROOT)/install/verilator/bin
+K9R5_ARA_MODEL_DIR  := $(K9R5_ARA_HW)/build/verilator
+K9R5_ARA_MODEL      := $(K9R5_ARA_MODEL_DIR)/Vara_tb_verilator
+K9R5_ARA_ARGS       := config=$(ARA_CONFIGURATION)
+K9R5_ARA_JOBS       ?= $(shell nproc)
+# Seconds per riscv-test (the slowest passing one takes ~1 min on 2 lanes)
+K9R5_ARA_TIMEOUT    ?= 300
+
+.PHONY: k9r5-ara-verilate k9r5-ara-app k9r5-ara-sim k9r5-ara-riscv-tests
+
+# Ara's own flow: check out its dependencies, apply its RAM-model patch (adds
+# the DPI functions that load programs), then verilate. A model built with a
+# different Verilator is rebuilt.
+k9r5-ara-verilate:
+	@test -x $(K9R5_ARA_VERIL_PATH)/verilator || \
+		{ echo "No Verilator in $(K9R5_ARA_VERIL_PATH); rebuild the image or set K9R5_ARA_VERIL_PATH."; exit 1; }
+	$(MAKE) -C $(K9R5_ARA_HW) checkout
+	grep -q simutil_memload $(K9R5_ARA_HW)/deps/tech_cells_generic/src/rtl/tc_sram.sv || \
+		$(MAKE) -C $(K9R5_ARA_HW) apply-patches
+	v="$$($(K9R5_ARA_VERIL_PATH)/verilator --version)"; \
+	if [ "$$(cat $(K9R5_ARA_MODEL_DIR)/k9r5-verilator-version 2>/dev/null)" != "$$v" ]; then \
+		rm -rf $(K9R5_ARA_MODEL_DIR); fi
+	$(MAKE) -C $(K9R5_ARA_HW) verilate $(K9R5_ARA_ARGS) veril_path=$(K9R5_ARA_VERIL_PATH)
+	$(K9R5_ARA_VERIL_PATH)/verilator --version > $(K9R5_ARA_MODEL_DIR)/k9r5-verilator-version
+
+# Build one of Ara's apps, e.g. `make k9r5-ara-app APP=fmatmul ARGS="32 32 32"`
+# (ARGS defaults to ara/apps/common/default_args.mk). The input data is always
+# regenerated, and the generated data.S is removed to keep the submodule clean.
+APP  ?=
+ARGS ?=
+k9r5-ara-app:
+	@test -n "$(APP)" || { echo "Usage: make k9r5-ara-app APP=<app> [ARGS=\"...\"]"; exit 1; }
+	rm -f $(K9R5_ARA_APPS)/bin/$(APP) $(K9R5_ARA_APPS)/$(APP)/data.S $(K9R5_ARA_APPS)/$(APP)/data.S.o
+	$(MAKE) -C $(K9R5_ARA_APPS) bin/$(APP) $(K9R5_ARA_ARGS) $(if $(ARGS),def_args_$(APP)="$(ARGS)")
+	rm -f $(K9R5_ARA_APPS)/$(APP)/data.S
+
+# Run an app built by k9r5-ara-app on the Verilator model. The model writes
+# CVA6's instruction trace (trace_hart_0.dasm) to its working directory.
+k9r5-ara-sim:
+	@test -n "$(APP)" || { echo "Usage: make k9r5-ara-sim APP=<app>"; exit 1; }
+	@test -x $(K9R5_ARA_MODEL) || { echo "Run 'make k9r5-ara-verilate' first."; exit 1; }
+	cd $(K9R5_ARA_HW)/build && $(K9R5_ARA_MODEL) -l ram,$(K9R5_ARA_APPS)/bin/$(APP),elf
+
+# Build and run all of Ara's riscv-tests in parallel (K9R5_ARA_TESTS="..." for
+# a subset); fails unless all pass.
+k9r5-ara-riscv-tests:
+	@test -x $(K9R5_ARA_MODEL) || { echo "Run 'make k9r5-ara-verilate' first."; exit 1; }
+	$(MAKE) -C $(K9R5_ARA_APPS) riscv_tests $(K9R5_ARA_ARGS)
+	$(K9R5_ROOT)/util/ara-riscv-tests.sh $(K9R5_ARA_MODEL) $(K9R5_ARA_APPS)/bin \
+		$(K9R5_ARA_HW)/build/riscv-tests $(K9R5_ARA_JOBS) $(K9R5_ARA_TIMEOUT)
+
 endif # K9R5_HOST_ONLY

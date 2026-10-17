@@ -113,6 +113,19 @@ RUN cd /src/ara \
         toolchain-llvm-rt INSTALL_DIR=/opt/ara/install \
     && rm -rf toolchain/riscv-llvm
 
+# Ara's testbench needs Ara's pinned Verilator: with Spatz's newer pin (5.050)
+# about 30 of Ara's riscv-tests (reductions, FP compares, vmv.s.x, segment
+# loads/stores, ...) hang. Installed where Ara's Makefile looks by default.
+RUN cd /src/ara \
+    && VCOMMIT=$(git ls-tree HEAD toolchain/verilator | awk '{print $3}') \
+    && git init -q /src/verilator && cd /src/verilator \
+    && git remote add origin https://github.com/verilator/verilator.git \
+    && git fetch -q --depth 1 origin ${VCOMMIT} && git checkout -q FETCH_HEAD \
+    && unset VERILATOR_ROOT && autoconf \
+    && ./configure --prefix=/opt/ara/install/verilator \
+    && make -j$(nproc) && make install \
+    && cd / && rm -rf /src/verilator
+
 ########################################
 #  Spatz toolchains (RV32 GCC + LLVM)  #
 ########################################
@@ -165,6 +178,7 @@ COPY --from=cheshire-gcc /opt/riscv /opt/riscv
 # install root instead of install/riscv-gcc. Copy them to where Ara's apps
 # (GCC_INSTALL_DIR) and Spatz's bootrom/CMake flow look for them.
 COPY --from=ara-toolchain /opt/ara/install/riscv-llvm          /opt/ara/install/riscv-llvm
+COPY --from=ara-toolchain /opt/ara/install/verilator           /opt/ara/install/verilator
 COPY --from=ara-toolchain /opt/ara/install/bin                 /opt/ara/install/riscv-gcc/bin
 COPY --from=ara-toolchain /opt/ara/install/include             /opt/ara/install/riscv-gcc/include
 COPY --from=ara-toolchain /opt/ara/install/lib                 /opt/ara/install/riscv-gcc/lib
@@ -186,7 +200,8 @@ COPY --from=spatz-toolchain /opt/spatz/install/riscv32-unknown-elf /opt/spatz/in
 # pkg_resources, which setuptools dropped in v81
 RUN pip install --no-cache-dir 'setuptools<81'
 
-# Only the RV64 GCC (Cheshire/CVA6 software), Spike and Verilator go on PATH.
+# Only the RV64 GCC (Cheshire/CVA6 software), Spike and Spatz's Verilator go on
+# PATH; Ara's flow finds its own Verilator in ara/install/verilator.
 # The two clang installs collide by name, so Ara and Spatz each find their
 # own through <repo>/install, which the entrypoint links to /opt/*/install.
 ENV PATH=/opt/riscv/bin:/opt/spatz/install/verilator/bin:/opt/spatz/install/riscv-isa-sim/bin:${PATH} \

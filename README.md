@@ -48,6 +48,25 @@ make k9r5-xilinx-program        # program the board over the Vivado hardware ser
 `ARA_CONFIGURATION` selects a file from `ara/config/` (default `2_lanes`, the only configuration
 tested in Cheshire). Every Cheshire `chs-*` target is also available.
 
+## Ara standalone testbench (in the container, Verilator)
+
+Ara's own testbench (CVA6 + Ara with an ideal memory, no Cheshire) is the fast way to check vector
+correctness and get cycle counts: Ara's `fmatmul` (32x32x32) runs in ~10 s instead of ~90 min in
+Questa Starter Edition.
+
+```bash
+make k9r5-ara-verilate                            # build the Verilator model (ARA_CONFIGURATION)
+make k9r5-ara-app APP=fmatmul ARGS="32 32 32"     # build one of ara/apps (ARGS: problem size)
+make k9r5-ara-sim APP=fmatmul                     # run it
+make k9r5-ara-riscv-tests                         # all 228 riscv-tests in parallel, with timeouts
+```
+
+It uses Ara's pinned dependencies (CVA6 `alpha.1`) and Ara's pinned Verilator, which the image
+installs in `ara/install/verilator`: with Verilator 5.050 (Spatz's pin) about 30 of the
+riscv-tests hang. Ara's `crt0` enables the FPU itself, so the CVA6 `mstatus.FS` bug does not affect
+these runs. Programs that use Cheshire's peripherals (`ara/cheshire/sw`, `k9r5-sw-ara`) need the
+SoC simulation below.
+
 ## Simulate (on the host, QuestaSim)
 
 QuestaSim runs on the host, not in the container. These targets need neither Bender nor the
