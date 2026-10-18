@@ -1,0 +1,79 @@
+K9R5: fixture_k9r5_soc, a copy of Cheshire's testbench fixture with the K9R5
+configuration (k9r5_pkg::K9R5Cfg) and the Spatz cluster (k9r5_spatz) on
+Cheshire's external AXI ports, in its own clock domain. Applied to a copy of
+cheshire/target/sim/src/fixture_cheshire_soc.sv by 'make k9r5-sim-scripts'.
+
+--- a/fixture_cheshire_soc.sv
++++ b/fixture_cheshire_soc.sv
+@@ -6,7 +6,7 @@
+ // Christopher Reinwardt <creinwar@student.ethz.ch>
+ // Paul Scheffler <paulsc@iis.ee.ethz.ch>
+ 
+-module fixture_cheshire_soc #(
++module fixture_k9r5_soc #(
+   /// The selected simulation configuration from the `tb_cheshire_pkg`.
+   parameter int unsigned SelectedCfg = 32'd0,
+   parameter bit          UseDramSys  = 1'b0
+@@ -17,7 +17,9 @@
+   import cheshire_pkg::*;
+   import tb_cheshire_pkg::*;
+ 
+-  localparam cheshire_cfg_t DutCfg = TbCheshireConfigs[SelectedCfg];
++  // K9R5: Cheshire with Ara and the Spatz cluster on its external AXI ports;
++  // SelectedCfg is unused.
++  localparam cheshire_cfg_t DutCfg = k9r5_pkg::K9R5Cfg;
+ 
+   `CHESHIRE_TYPEDEF_ALL(, DutCfg)
+ 
+@@ -63,6 +65,36 @@
+   logic [SlinkNumChan-1:0][SlinkNumLanes-1:0] slink_i;
+   logic [SlinkNumChan-1:0][SlinkNumLanes-1:0] slink_o;
+ 
++  // K9R5: Spatz cluster in its own clock domain (80 MHz vs. Cheshire's 200 MHz
++  // in this testbench; Carfield runs Spatz at 20 MHz vs. 50 MHz on FPGA).
++  localparam time ClkPeriodSpatz = 12.5ns;
++
++  logic clk_spatz;
++  initial begin
++    clk_spatz = 1'b0;
++    forever #(ClkPeriodSpatz/2) clk_spatz = ~clk_spatz;
++  end
++
++  axi_slv_req_t ext_slv_req;
++  axi_slv_rsp_t ext_slv_rsp;
++  axi_mst_req_t ext_mst_req;
++  axi_mst_rsp_t ext_mst_rsp;
++
++  k9r5_spatz #(
++    .Cfg ( DutCfg )
++  ) i_spatz (
++    .clk_i           ( clk         ),
++    .rst_ni          ( rst_n       ),
++    .test_mode_i     ( test_mode   ),
++    .clk_spatz_i     ( clk_spatz   ),
++    .rst_spatz_ni    ( rst_n       ),
++    .axi_slv_req_i   ( ext_slv_req ),
++    .axi_slv_rsp_o   ( ext_slv_rsp ),
++    .axi_mst_req_o   ( ext_mst_req ),
++    .axi_mst_rsp_i   ( ext_mst_rsp ),
++    .cluster_probe_o ( )
++  );
++
+   cheshire_soc #(
+     .Cfg                ( DutCfg ),
+     .ExtHartinfo        ( '0 ),
+@@ -82,10 +114,10 @@
+     .rtc_i              ( rtc       ),
+     .axi_llc_mst_req_o  ( axi_llc_mst_req ),
+     .axi_llc_mst_rsp_i  ( axi_llc_mst_rsp ),
+-    .axi_ext_mst_req_i  ( '0 ),
+-    .axi_ext_mst_rsp_o  ( ),
+-    .axi_ext_slv_req_o  ( ),
+-    .axi_ext_slv_rsp_i  ( '0 ),
++    .axi_ext_mst_req_i  ( ext_mst_req ),
++    .axi_ext_mst_rsp_o  ( ext_mst_rsp ),
++    .axi_ext_slv_req_o  ( ext_slv_req ),
++    .axi_ext_slv_rsp_i  ( ext_slv_rsp ),
+     .reg_ext_slv_req_o  ( ),
+     .reg_ext_slv_rsp_i  ( '0 ),
+     .intr_ext_i         ( '0 ),
