@@ -1,0 +1,12 @@
+`verilator_config
+
+// CVA6: false combinational loops through the load unit's request/response
+// structs make Verilator produce wrong results (core deadlocks); split them as
+// Cheshire's Verilator work does (verilator/verilator#5350).
+split_var -module "load_unit" -var "req_port_i"
+split_var -module "load_unit" -var "req_port_o"
+
+// Cheshire: the same for CVA6's AXI request with its user bits overwritten
+// (as Cheshire's Verilator work does)
+split_var -module "cheshire_soc" -var "core_ur_req"
+split_var -module "cheshire_soc" -var "core_out_req"
