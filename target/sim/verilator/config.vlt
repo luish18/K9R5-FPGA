@@ -10,3 +10,8 @@ split_var -module "load_unit" -var "req_port_o"
 // (as Cheshire's Verilator work does)
 split_var -module "cheshire_soc" -var "core_ur_req"
 split_var -module "cheshire_soc" -var "core_out_req"
+
+// Spatz's execution unit (four FPUs per core): verilated once and reused by
+// every cluster core (with --hierarchical); flattening all eight runs out of
+// memory
+hier_block -module "spatz_vfu"

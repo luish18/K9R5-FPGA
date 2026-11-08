@@ -12,7 +12,7 @@ AXI accelerator.
 | `cheshire/` | Base SoC | `mp/ara-pulp-v2` branch (the Cheshire + Ara integration) |
 | `cva6/` | `pulp-platform/cva6` fork | `pulp-v2.0.0` (Ara and Cheshire's Ara branch pin `alpha.1`, whose `mstatus.FS` never turns Dirty on scalar FP writes; fixed in upstream commit `ecb138010`) |
 | `ara/` | Ara vector unit | Ara `main` (bug fixes ahead of Cheshire's pin) |
-| `spatz/` | Spatz cluster | in the dependency tree and generated (`hw/spatz/k9r5.spatz_cluster.hjson`); not yet instantiated in the SoC |
+| `spatz/` | Spatz cluster | 8 cores (each a Snitch with a Spatz VPU), generated from `hw/spatz/k9r5.spatz_cluster.hjson` and attached to Cheshire's external AXI ports (`hw/k9r5_spatz.sv`) |
 
 The repo root is a Bender package depending on Cheshire and Spatz. `Bender.local` overrides
 Cheshire's `ara` and `cva6` pins with the local submodules, and pins packages shared with Spatz to
@@ -49,6 +49,7 @@ make chs-hw-all                 # generate Cheshire's hardware (registers, perip
 make k9r5-spatz-gen             # generate the Spatz cluster (wrapper, bootrom, spatz_pkg) into build/hw
 make chs-sw-all                 # Cheshire's own tests, e.g. cheshire/sw/tests/helloworld.spm.elf
 make k9r5-sw-ara                # Ara's vector tests for Cheshire, into sw/build/ara/
+make k9r5-sw-spatz              # Spatz cluster programs with a CVA6 launcher, into sw/build/spatz/
 make k9r5-xilinx                # VCU128 bitstream (K9R5_BOARD=vcu128 by default)
 make k9r5-xilinx-program        # program the board over the Vivado hardware server
 ```
@@ -94,23 +95,82 @@ prints the CPU's `pc`/`mcause`/`mepc`/`mtval`, so a program that traps fails ins
 The log is `target/sim/verilator/build/k9r5-sim.<binary>.log`, with the Spatz cores' instruction
 traces in `target/sim/verilator/build/logs/`.
 
-Building the model takes about 6 minutes on 12 cores. It simulates about 7 kHz of the 200 MHz
-system clock with 4 threads, so `helloworld` (~440k cycles, dominated by the UART at 115200 baud)
-takes about a minute, against more than 80 minutes for comparable programs in Questa Starter
-Edition, which this flow replaces.
+With the 8-core Spatz cluster, building the model takes about 25 minutes on 12 cores and needs
+about 13 GB of RAM. It simulates about 1.9 kHz of the 200 MHz system clock with 4 threads, so
+`helloworld` (~440k cycles, dominated by the UART at 115200 baud) takes about 4 minutes; with the
+earlier 2-core cluster it ran at 7 kHz. Questa Starter Edition, which this flow replaces, took more
+than 80 minutes for comparable programs.
 
 Options:
 
-- `K9R5_VLT_THREADS`: model threads (default 4; 8 is ~10% faster, 2 ~25% slower).
+- `K9R5_VLT_THREADS`: model threads (default 4; with the 2-core cluster, 8 was ~10% faster and 2
+  ~25% slower).
 - `K9R5_VLT_TRACE=1`: build a model with FST tracing (in `target/sim/verilator/build-trace/`), then
-  pass `K9R5_VLT_TRACE=1 K9R5_SIM_TRACE=<file.fst>` to `k9r5-sim`.
+  pass `K9R5_VLT_TRACE=1 K9R5_SIM_TRACE=<file.fst>` to `k9r5-sim`. Traced models are flattened
+  (see below), which with eight Spatz cores needs more than 32 GB.
 - `K9R5_SIM_ARGS=+PROGRESS=<n>`: print hart 0's `pc` every `n` cycles.
-- `K9R5_VLT_PATH`: another Verilator (Ara's pinned one by default); `K9R5_VLT_ARGS`: extra
-  Verilator arguments.
+- `K9R5_VLT_PATH`: another Verilator; `K9R5_VLT_ARGS`: extra Verilator arguments.
 
-The model is built with `-fno-dfg`: with Verilator's DFG optimizer, CVA6 hangs in the boot ROM.
-`k9r5-sim` does not rebuild the model, so several runs can go in parallel.
+`k9r5-sim` does not rebuild the model, so several runs can go in parallel. Verilator caveats, all
+handled by `k9r5-sim-build`:
+
+- It uses Spatz's pinned Verilator (5.050, in the image). Built with Ara's (5.047-devel), one
+  Spatz core's memory accesses never complete once all eight cores run, and the cluster hangs in
+  a barrier. Ara's standalone testbench keeps Ara's Verilator, which its riscv-tests need.
+- `-fno-dfg`: with Verilator's DFG optimizer, CVA6 hangs in the boot ROM.
+- `--hierarchical` with `hier_block spatz_vfu` (`target/sim/verilator/config.vlt`): Spatz's
+  execution unit is verilated once for all eight cores; flattened, Verilator runs out of memory.
 
 Unlike Cheshire's QuestaSim testbench, there is no JTAG or UART preload, no autonomous boot (no I2C
 EEPROM or SPI flash models) and no CVA6 instruction trace (CVA6 disables its tracer under
 Verilator).
+
+## Spatz cluster programs
+
+Programs for the Spatz cluster live in `sw/spatz/*.c`. `make k9r5-sw-spatz` builds each with
+Spatz's runtime (Cheshire platform) and LLVM into `sw/build/spatz/cluster/`, and embeds its image
+in a CVA6 launcher (`sw/spatz/launch/`) as `sw/build/spatz/<prog>.{spm,dram}.elf`. The image is
+linked at the cluster's DRAM window (`0x8100_0000`, `hw/spatz/k9r5.spatz_cluster.hjson`), so
+`k9r5-sim` preloads it with the launcher. CVA6 writes the entry point to the cluster's boot
+control register, wakes all eight cores through `CL_CLINT_SET` (the cluster boot ROM waits in
+`wfi`), polls the cluster's `EOC_EXIT` register and prints one line from a mailbox the program
+leaves at the end of the DRAM window (`sw/spatz/include/k9r5_spatz_mailbox.h`). The launcher
+returns the cluster program's exit code.
+
+```bash
+make k9r5-sw-spatz
+make k9r5-sim BINARY=sw/build/spatz/vec_test.spm.elf
+```
+
+`vec_test` checks every core: each fills its slice of fp64 and int32 vectors in TCDM, computes
+`y = 3x + y` (`vfmacc.vf`, e64) and `z = p + q` (`vadd.vv`, e32) on its own Spatz, core 0 copies
+`y` to DRAM and back with the cluster DMA, and every core checks its slice. A passing run prints
+
+```
+[UART] spatz ret 0 cores ff vec 916 dma 2581
+[K9R5] SUCCESS
+```
+
+(exit code, mask of the cores that ran, cluster cycles of the vector phase and of the DMA round
+trip; on failure also the wrong elements per check and the first wrong axpy value).
+
+Time for one run on 12 cores (model already built):
+
+| Phase | Simulated | Wall-clock (1.9 kHz) |
+|---|---|---|
+| Boot ROM, preload over the serial link, launch | 0.3 ms | 30 s |
+| Cluster wake-up and runtime start (code fetched from DRAM) | 0.3 ms | 30 s |
+| `vec_test` on 8 cores, DMA round trip, checks | 0.1 ms | 10 s |
+| CVA6: UART set-up and the 39-character result line | 3.8 ms | 6.5 min |
+| **Total** | **4.5 ms (894k cycles)** | **~8 min** |
+
+The UART dominates (~87 µs of simulated time per character at 115200 baud), so a longer cluster
+program adds about 1 minute of wall-clock time per 0.6 ms (120k system cycles, 48k cluster
+cycles) of cluster run time. Rebuilding the model after a hardware change adds about 25 minutes.
+
+One finding while writing `vec_test`: in this model, a scalar `fmadd.d` executed on a Spatz core
+never wrote its result to the FP register file (the compare after it read the register's old
+value), while `fcvt`, `fld`/`fsd`, `feq` and vector FP work. Spatz's own tests only cover vector
+instructions. `vec_test` computes its reference values with integer arithmetic, so it does not
+depend on scalar fused FP operations; whether this is an RTL bug or a Verilator artifact still
+has to be checked (e.g. in Spatz's standalone testbench).

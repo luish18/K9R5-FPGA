@@ -30,11 +30,13 @@ endif
 # Host: sources #
 #################
 
-# Fetch submodules, including the CVA6 submodule its Bender sources need.
+# Fetch submodules, including the CVA6 submodule its Bender sources need and
+# the printf library in Cheshire's software.
 .PHONY: k9r5-deps
 k9r5-deps:
 	git -C $(K9R5_ROOT) submodule update --init
 	git -C $(K9R5_ROOT)/cva6 submodule update --init core/cache_subsystem/hpdcache
+	git -C $(K9R5_ROOT)/cheshire submodule update --init sw/deps/printf
 
 ifndef K9R5_HOST_ONLY
 
@@ -184,9 +186,11 @@ k9r5-xilinx-flash:
 # testbench in target/sim/verilator. Programs are preloaded and started from
 # idle boot like Cheshire's testbench with serial link preload: segments in
 # DRAM directly into the testbench's memory, all others over the serial link.
-# Uses Ara's pinned Verilator, as Ara's own testbench (see below).
+# Uses Spatz's pinned Verilator (5.050): built with Ara's (5.047-devel, see
+# Ara's testbench below), a Spatz core's memory accesses never complete when
+# all eight cluster cores run.
 K9R5_VLT_DIR     := $(K9R5_ROOT)/target/sim/verilator
-K9R5_VLT_PATH    ?= $(ARA_ROOT)/install/verilator/bin
+K9R5_VLT_PATH    ?= $(SPATZ_ROOT)/install/verilator/bin
 K9R5_VLT_THREADS ?= 4
 K9R5_VLT_JOBS    ?= $(shell nproc)
 # 1: build with FST tracing (in its own directory, so both models can exist),
@@ -202,14 +206,16 @@ K9R5_VLT_MODEL   := $(K9R5_VLT_BUILD)/Vtb_k9r5_vlt
 # convert integers to enums implicitly (ENUMVALUE), which Verilator rejects.
 # -fno-dfg: with Verilator's DFG optimizer, CVA6 hangs in the boot ROM (only
 # in models built without tracing). -O2 instead of Verilator's default -Os
-# runs ~15% faster.
+# runs ~15% faster. --hierarchical verilates Spatz's execution unit once for
+# all cluster cores (hier_block in config.vlt): flattened, eight cores need
+# more than 32 GB. Like Ara's flow, traced models are flattened.
 K9R5_VLT_FLAGS := --cc --exe --build -j $(K9R5_VLT_JOBS) --top-module tb_k9r5_vlt \
                   --Mdir $(K9R5_VLT_BUILD)/obj -o $(K9R5_VLT_MODEL) \
                   --timing -O3 -fno-dfg --x-assign fast --x-initial fast --noassert \
                   -DASSERTS_OFF -DCOMMON_CELLS_ASSERTS_OFF \
                   --threads $(K9R5_VLT_THREADS) -MAKEFLAGS OPT_FAST=-O2 \
                   -Wno-fatal -Wno-lint -Wno-style -Wno-ENUMVALUE \
-                  $(if $(filter 1,$(K9R5_VLT_TRACE)),--trace-fst --trace-structs) $(K9R5_VLT_ARGS)
+                  $(if $(filter 1,$(K9R5_VLT_TRACE)),--trace-fst --trace-structs,--hierarchical) $(K9R5_VLT_ARGS)
 
 # Simulated-time limit per run (0 for none). A program that traps sits in
 # Cheshire's trap handler forever, so without a limit a failing run never ends.
@@ -321,6 +327,74 @@ $(K9R5_SW_ELF) $(K9R5_SW_ELF:.elf=.dump) $(K9R5_SW_C:.c=.o): \
 
 .PHONY: k9r5-sw
 k9r5-sw: $(K9R5_SW_ELF) $(K9R5_SW_ELF:.elf=.dump)
+
+##########################
+# Spatz cluster software #
+##########################
+
+# Programs for the Spatz cluster (sw/spatz/*.c), built with Spatz's runtime
+# and LLVM by CMake into sw/build/spatz/cluster. Each is embedded in a CVA6
+# launcher (sw/spatz/launch) as sw/build/spatz/<prog>.{spm,dram}.elf, ready for
+# k9r5-sim: the image is linked at the cluster's DRAM window, CVA6 wakes all
+# cores and returns the cluster program's exit code.
+K9R5_SPATZ_SW_SRC     := $(K9R5_ROOT)/sw/spatz
+K9R5_SPATZ_SW_BUILD   := $(K9R5_ROOT)/sw/build/spatz
+K9R5_SPATZ_SW_CLUSTER := $(K9R5_SPATZ_SW_BUILD)/cluster
+K9R5_SPATZ_LLVM       ?= $(SPATZ_ROOT)/install/llvm
+K9R5_SPATZ_PROGS      := $(basename $(notdir $(wildcard $(K9R5_SPATZ_SW_SRC)/*.c)))
+K9R5_SPATZ_ELF        := $(foreach p,$(K9R5_SPATZ_PROGS),$(foreach l,spm dram,$(K9R5_SPATZ_SW_BUILD)/$(p).$(l).elf))
+
+# Cluster parameters from K9R5_SPATZ_CFG, read once and only when needed:
+# DRAM window origin and size, cores, base hart ID, TCDM base and size, and
+# the derived peripheral base and mailbox (last 256 B of the DRAM window)
+K9R5_SPATZ_PARAMS = $(eval K9R5_SPATZ_PARAMS := $(shell $(PYTHON) -c "import jstyleson; \
+    c = jstyleson.load(open('$(K9R5_SPATZ_CFG)')); k = c['cluster']; d = c['dram']; \
+    t = k['tcdm']['size'] * 1024; \
+    print(*map(hex, [d['address'], d['length'], len(k['cores']), k['cluster_base_hartid'], \
+        k['cluster_base_addr'], t, k['cluster_base_addr'] + t, d['address'] + d['length'] - 256]))"))$(K9R5_SPATZ_PARAMS)
+k9r5_spatz_param = $(word $(1),$(K9R5_SPATZ_PARAMS))
+
+.PHONY: k9r5-sw-spatz k9r5-sw-spatz-cluster
+k9r5-sw-spatz: $(K9R5_SPATZ_ELF) $(K9R5_SPATZ_ELF:.elf=.dump)
+
+# CMake rebuilds only what changed; every image below depends on this step
+k9r5-sw-spatz-cluster: $(K9R5_HW_BUILD)/spatz/encoding.h
+	cmake -S $(K9R5_SPATZ_SW_SRC) -B $(K9R5_SPATZ_SW_CLUSTER) \
+		-DLLVM_PATH=$(K9R5_SPATZ_LLVM) -DELEN=64 \
+		-DSPATZ_CLUSTER_CFG=$(notdir $(K9R5_SPATZ_CFG)) -DSPATZ_CLUSTER_PLATFORM=cheshire \
+		-DSPATZ_CLUSTER_MEMORY_ORIGIN=$(call k9r5_spatz_param,1) \
+		-DSPATZ_CLUSTER_MEMORY_SIZE=$(call k9r5_spatz_param,2) \
+		-DSNRT_CLUSTER_CORE_NUM=$(call k9r5_spatz_param,3) \
+		-DSNRT_BASE_HARTID=$(call k9r5_spatz_param,4) \
+		-DSNRT_TCDM_START_ADDR=$(call k9r5_spatz_param,5) \
+		-DSNRT_TCDM_SIZE=$(call k9r5_spatz_param,6) -DSNRT_CLUSTER_OFFSET=0 \
+		-DK9R5_SPATZ_MAILBOX=$(call k9r5_spatz_param,8) \
+		-DK9R5_ENCODING_DIR=$(K9R5_HW_BUILD)/spatz
+	cmake --build $(K9R5_SPATZ_SW_CLUSTER) -j $(shell nproc)
+
+# The cluster program's flat image and entry point, as an object for CVA6
+$(K9R5_SPATZ_SW_BUILD)/%.image.o: $(K9R5_SPATZ_SW_SRC)/launch/spatz_image.S k9r5-sw-spatz-cluster
+	$(K9R5_SPATZ_LLVM)/bin/llvm-objcopy -O binary $(K9R5_SPATZ_SW_CLUSTER)/$*.elf $(@:.o=.bin)
+	$(CHS_SW_CC) $(CHS_SW_CCFLAGS) -c $< -o $@ -DSPATZ_BIN='"$(@:.o=.bin)"' \
+		-DSPATZ_ENTRY=$$($(K9R5_SPATZ_LLVM)/bin/llvm-readelf -h $(K9R5_SPATZ_SW_CLUSTER)/$*.elf | awk '/Entry/ {print $$4}')
+
+$(K9R5_SPATZ_SW_BUILD)/%.c: $(K9R5_SPATZ_SW_SRC)/launch/spatz_launch.c
+	mkdir -p $(dir $@)
+	cp $< $@
+.SECONDARY: $(K9R5_SPATZ_PROGS:%=$(K9R5_SPATZ_SW_BUILD)/%.c)
+
+$(K9R5_SPATZ_ELF) $(K9R5_SPATZ_ELF:.elf=.dump) $(K9R5_SPATZ_PROGS:%=$(K9R5_SPATZ_SW_BUILD)/%.o): \
+	private CHS_SW_INCLUDES += -I$(K9R5_SPATZ_SW_SRC)/include -I$(SPATZ_ROOT)/sw/snRuntime/include
+$(K9R5_SPATZ_ELF) $(K9R5_SPATZ_PROGS:%=$(K9R5_SPATZ_SW_BUILD)/%.o): \
+	private CHS_SW_CCFLAGS += -DK9R5_SPATZ_CORES=$(call k9r5_spatz_param,3) \
+		-DK9R5_SPATZ_PERIPH_BASE=$(call k9r5_spatz_param,7) -DK9R5_SPATZ_MAILBOX=$(call k9r5_spatz_param,8)
+$(K9R5_SPATZ_ELF): private CHS_SW_LDFLAGS += -Wl,--section-start=.spatz_image=$(call k9r5_spatz_param,1)
+define k9r5_spatz_prog
+$(K9R5_SPATZ_SW_BUILD)/$(1).spm.elf $(K9R5_SPATZ_SW_BUILD)/$(1).dram.elf: $(K9R5_SPATZ_SW_BUILD)/$(1).image.o
+$(K9R5_SPATZ_SW_BUILD)/$(1).spm.elf $(K9R5_SPATZ_SW_BUILD)/$(1).dram.elf: \
+	private CHS_SW_LIBS += $(K9R5_SPATZ_SW_BUILD)/$(1).image.o
+endef
+$(foreach p,$(K9R5_SPATZ_PROGS),$(eval $(call k9r5_spatz_prog,$(p))))
 
 ##################################
 # Ara standalone testbench (Verilator)
