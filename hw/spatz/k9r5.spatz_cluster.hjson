@@ -26,9 +26,11 @@
         "axi_cdc_enable": true,
         "sw_rst_enable": true,
         "axi_isolate_enable": false,
+        // 8 banks per core (each Spatz has 4 TCDM ports), as in Spatz's own
+        // (2-core) configs
         "tcdm": {
             "size": 128,
-            "banks": 16,
+            "banks": 64,
             "misalign": false
         },
         "cluster_periph_size": 64, // kB
@@ -63,8 +65,9 @@
             "register_core_rsp": true,
             "register_offload_rsp": true
         },
+        // 8 cores (harts 1-8), each a Snitch with its own Spatz; core 0 also
+        // drives the cluster DMA
         "cores": [
-            // DMA core
             {
                 "isa": "rv32imafd",
                 "xdma": true,
@@ -77,14 +80,84 @@
                 "num_dtlb_entries": 1,
                 "num_itlb_entries": 1
             },
-
-            // Compute core
             {
                 "isa": "rv32imafd",
+                "xdma": false,
                 "xf16": true,
                 "xf8": true,
                 "xfdotp": true,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
+            },
+            {
+                "isa": "rv32imafd",
                 "xdma": false,
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
+            },
+            {
+                "isa": "rv32imafd",
+                "xdma": false,
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
+            },
+            {
+                "isa": "rv32imafd",
+                "xdma": false,
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
+            },
+            {
+                "isa": "rv32imafd",
+                "xdma": false,
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
+            },
+            {
+                "isa": "rv32imafd",
+                "xdma": false,
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
+                "num_int_outstanding_loads": 1,
+                "num_int_outstanding_mem": 4,
+                "num_spatz_outstanding_loads": 4,
+                "num_dtlb_entries": 1,
+                "num_itlb_entries": 1
+            },
+            {
+                "isa": "rv32imafd",
+                "xdma": false,
+                "xf16": true,
+                "xf8": true,
+                "xfdotp": true,
                 "num_int_outstanding_loads": 1,
                 "num_int_outstanding_mem": 4,
                 "num_spatz_outstanding_loads": 4,
